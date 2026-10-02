@@ -1,32 +1,81 @@
 name: Build APK
+
 on:
   push:
   workflow_dispatch:
+
 permissions:
   contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      GRADLE_OPTS: -Dorg.gradle.daemon=false -Dorg.gradle.jvmargs=-Xmx3g
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Unzip project
-        run: unzip -q CaliTree.zip -d work
-      - uses: actions/setup-java@v4
+        run: |
+          unzip -q CaliTree.zip -d work
+          ls -la work
+          ls -la work/CaliTree
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
-      - uses: android-actions/setup-android@v3
-      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          accept-android-sdk-licenses: true
+          log-accepted-android-sdk-licenses: false
+
+      - name: Accept licenses and install SDK packages
+        run: |
+          set +o pipefail
+          mkdir -p "$ANDROID_HOME/licenses"
+          # Fallback: write well-known license hashes
+          echo -e "\n24333f8a63b6825ea9c5514f83c2829b004d1fee" > "$ANDROID_HOME/licenses/android-sdk-license"
+          echo -e "\n84831b9409646a918e30573bab4c9c91346d8abd" > "$ANDROID_HOME/licenses/android-sdk-preview-license"
+          # Accept all licenses via sdkmanager
+          yes | sdkmanager --licenses > /dev/null || true
+          set -o pipefail
+          sdkmanager --install \
+            "platform-tools" \
+            "platforms;android-34" \
+            "platforms;android-35" \
+            "build-tools;34.0.0" \
+            "build-tools;35.0.0"
+          yes | sdkmanager --licenses > /dev/null || true
+
+      - name: Set up Gradle 8.7
+        uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.7'
+
       - name: Build debug APK
         working-directory: work/CaliTree
-        run: gradle assembleDebug --no-daemon
-      - uses: actions/upload-artifact@v4
+        env:
+          ANDROID_SDK_ROOT: ${{ env.ANDROID_HOME }}
+        run: gradle assembleDebug --no-daemon --stacktrace
+
+      - name: Check APK exists
+        run: ls -lh work/CaliTree/app/build/outputs/apk/debug/
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
         with:
           name: CaliTree-apk
           path: work/CaliTree/app/build/outputs/apk/debug/app-debug.apk
-      - uses: softprops/action-gh-release@v2
+          if-no-files-found: error
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: build-${{ github.run_number }}
           name: CaliTree build ${{ github.run_number }}
