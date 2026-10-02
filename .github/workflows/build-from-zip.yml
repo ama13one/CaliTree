@@ -29,29 +29,46 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-        with:
-          accept-android-sdk-licenses: true
-          log-accepted-android-sdk-licenses: false
-
-      - name: Accept licenses and install SDK packages
+      - name: Prepare Android SDK (preinstalled on runner)
         run: |
           set +o pipefail
+          export ANDROID_HOME="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          mkdir -p "$ANDROID_HOME"
+
+          # Fallback: download cmdline-tools only if the runner lacks them
+          if [ ! -x "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" ]; then
+            echo "cmdline-tools not found, downloading..."
+            curl -fsSL -o /tmp/cmdline-tools.zip \
+              https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
+            unzip -q /tmp/cmdline-tools.zip -d /tmp/cmdline-extract
+            mkdir -p "$ANDROID_HOME/cmdline-tools"
+            rm -rf "$ANDROID_HOME/cmdline-tools/latest"
+            mv /tmp/cmdline-extract/cmdline-tools "$ANDROID_HOME/cmdline-tools/latest"
+          fi
+
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+
+          # Export for all following steps
+          echo "ANDROID_HOME=$ANDROID_HOME" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$ANDROID_HOME" >> "$GITHUB_ENV"
+          echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+          echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
+
+          # Accept licenses (known hashes + sdkmanager)
           mkdir -p "$ANDROID_HOME/licenses"
-          # Fallback: write well-known license hashes
-          echo -e "\n24333f8a63b6825ea9c5514f83c2829b004d1fee" > "$ANDROID_HOME/licenses/android-sdk-license"
-          echo -e "\n84831b9409646a918e30573bab4c9c91346d8abd" > "$ANDROID_HOME/licenses/android-sdk-preview-license"
-          # Accept all licenses via sdkmanager
-          yes | sdkmanager --licenses > /dev/null || true
-          set -o pipefail
-          sdkmanager --install \
+          printf "\n24333f8a63b6825ea9c5514f83c2829b004d1fee" > "$ANDROID_HOME/licenses/android-sdk-license"
+          printf "\n84831b9409646a918e30573bab4c9c91346d8abd" > "$ANDROID_HOME/licenses/android-sdk-preview-license"
+          yes | "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --licenses > /dev/null || true
+
+          # Install only valid, current packages (NOT the obsolete "tools")
+          "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --install \
             "platform-tools" \
             "platforms;android-34" \
             "platforms;android-35" \
             "build-tools;34.0.0" \
             "build-tools;35.0.0"
-          yes | sdkmanager --licenses > /dev/null || true
+
+          yes | "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --licenses > /dev/null || true
 
       - name: Set up Gradle 8.7
         uses: gradle/actions/setup-gradle@v4
@@ -60,8 +77,6 @@ jobs:
 
       - name: Build debug APK
         working-directory: work/CaliTree
-        env:
-          ANDROID_SDK_ROOT: ${{ env.ANDROID_HOME }}
         run: gradle assembleDebug --no-daemon --stacktrace
 
       - name: Check APK exists
