@@ -1,0 +1,81 @@
+name: Inspect CAMA ZIPs
+
+on:
+  workflow_dispatch:
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check ZIP files
+        run: |
+          set -e
+
+          mkdir -p inspect
+
+          echo "===== ZIP FILES IN REPOSITORY ====="
+          ls -lh *.zip || true
+
+          for f in "CaliTree-Updated.zip" "CaliTree (2).zip"; do
+            echo ""
+            echo "========================================"
+            echo "FILE: $f"
+            echo "========================================"
+
+            if [ -f "$f" ]; then
+              echo "ZIP FOUND"
+              echo ""
+              echo "--- ZIP CONTENTS ---"
+
+              unzip -l "$f" > "inspect/${f// /_}_contents.txt"
+              cat "inspect/${f// /_}_contents.txt"
+
+              mkdir -p "inspect/${f// /_}"
+              unzip -q "$f" -d "inspect/${f// /_}"
+
+              echo ""
+              echo "--- PROJECT FILES ---"
+
+              find "inspect/${f// /_}" -type f | sort \
+                > "inspect/${f// /_}_files.txt"
+
+              cat "inspect/${f// /_}_files.txt"
+
+              echo ""
+              echo "--- FILE COUNTS ---"
+              echo "Kotlin files:"
+              find "inspect/${f// /_}" -type f -name "*.kt" | wc -l
+
+              echo "Java files:"
+              find "inspect/${f// /_}" -type f -name "*.java" | wc -l
+
+              echo "XML files:"
+              find "inspect/${f// /_}" -type f -name "*.xml" | wc -l
+
+              echo "JSON files:"
+              find "inspect/${f// /_}" -type f -name "*.json" | wc -l
+
+              echo ""
+              echo "--- IMPORTANT TERMS ---"
+
+              grep -RniE \
+                "bodiesFa|bodiesFr|bodiesEs|DemoPlayer|Motion|animation|translation|locale" \
+                "inspect/${f// /_}" \
+                > "inspect/${f// /_}_important.txt" || true
+
+              cat "inspect/${f// /_}_important.txt"
+
+            else
+              echo "ZIP NOT FOUND"
+            fi
+          done
+
+      - name: Upload inspection report
+        uses: actions/upload-artifact@v4
+        with:
+          name: CAMA-ZIP-Inspection-Report
+          path: inspect/
