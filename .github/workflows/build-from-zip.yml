@@ -19,7 +19,7 @@ jobs:
 
       - name: Unzip project
         run: |
-          unzip -q CaliTree-Merged.zip -d work
+          unzip -q CaliTree-Fixed.zip -d work
           ls -la work
           ls -la work/CaliTree
 
