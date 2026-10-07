@@ -26,48 +26,33 @@ jobs:
         run: |
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses || true
 
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+
       - name: Extract project ZIP
         run: |
           rm -rf work
           mkdir -p work
           unzip -q "CaliTree-3D.zip" -d work
 
-          echo "Looking for Gradle wrapper..."
-          find work -name gradlew -type f -print
-
-      - name: Find Android project
-        run: |
-          GRADLEW=$(find work -name gradlew -type f -print -quit)
-
-          if [ -z "$GRADLEW" ]; then
-            echo "ERROR: gradlew was not found inside CaliTree-3D.zip"
-            echo "Project contents:"
-            find work -maxdepth 5 -type f | head -200
-            exit 1
-          fi
-
-          PROJECT_DIR=$(dirname "$GRADLEW")
-
-          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
-          echo "Found Gradle project at: $PROJECT_DIR"
-
       - name: Build APK
-        working-directory: ${{ env.PROJECT_DIR }}
+        working-directory: work/CaliTree
         env:
           GRADLE_OPTS: "-Dorg.gradle.daemon=false -Dorg.gradle.jvmargs=-Xmx3g"
         run: |
-          chmod +x gradlew
-          ./gradlew assembleDebug --no-daemon
+          gradle assembleDebug --no-daemon
 
       - name: Find APK
         run: |
           echo "APK files:"
-          find "$PROJECT_DIR" -type f -name "*.apk"
+          find work/CaliTree -type f -name "*.apk"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: CaliTree-3D-apk
           path: |
-            ${{ env.PROJECT_DIR }}/**/build/outputs/apk/**/*.apk
+            work/CaliTree/**/build/outputs/apk/**/*.apk
           if-no-files-found: error
