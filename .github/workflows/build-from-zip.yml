@@ -32,20 +32,24 @@ jobs:
           mkdir -p work
           unzip -q "CaliTree-3D.zip" -d work
 
-          echo "Extracted files:"
-          find work -maxdepth 3 -type f | head -100
+          echo "Looking for Gradle wrapper..."
+          find work -name gradlew -type f -print
 
       - name: Find Android project
         run: |
-          PROJECT_DIR=$(find work \( -name settings.gradle -o -name settings.gradle.kts \) -print -quit | xargs -r dirname)
+          GRADLEW=$(find work -name gradlew -type f -print -quit)
 
-          if [ -z "$PROJECT_DIR" ]; then
-            echo "ERROR: Android project was not found."
+          if [ -z "$GRADLEW" ]; then
+            echo "ERROR: gradlew was not found inside CaliTree-3D.zip"
+            echo "Project contents:"
+            find work -maxdepth 5 -type f | head -200
             exit 1
           fi
 
+          PROJECT_DIR=$(dirname "$GRADLEW")
+
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
-          echo "Android project found at: $PROJECT_DIR"
+          echo "Found Gradle project at: $PROJECT_DIR"
 
       - name: Build APK
         working-directory: ${{ env.PROJECT_DIR }}
