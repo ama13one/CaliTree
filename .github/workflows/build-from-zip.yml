@@ -22,17 +22,9 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-
       - name: Accept Android SDK licenses
         run: |
-          yes | sdkmanager --licenses || true
-
-      - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: "8.7"
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses || true
 
       - name: Extract project ZIP
         run: |
@@ -45,7 +37,7 @@ jobs:
 
       - name: Find Android project
         run: |
-          PROJECT_DIR=$(find work -name settings.gradle -o -name settings.gradle.kts | head -1 | xargs -r dirname)
+          PROJECT_DIR=$(find work \( -name settings.gradle -o -name settings.gradle.kts \) -print -quit | xargs -r dirname)
 
           if [ -z "$PROJECT_DIR" ]; then
             echo "ERROR: Android project was not found."
