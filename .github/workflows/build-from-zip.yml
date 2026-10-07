@@ -37,6 +37,41 @@ jobs:
           mkdir -p work
           unzip -q "CaliTree-3D.zip" -d work
 
+      - name: Fix Compose dependency
+        working-directory: work/CaliTree
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          files = list(Path(".").rglob("*.gradle")) + list(Path(".").rglob("*.gradle.kts"))
+
+          old = "androidx.compose.ui.graphics:graphics"
+          new = "androidx.compose.ui:ui-graphics"
+
+          found = False
+
+          for file in files:
+              text = file.read_text(encoding="utf-8")
+              if old in text:
+                  text = text.replace(old, new)
+                  file.write_text(text, encoding="utf-8")
+                  print(f"Fixed: {file}")
+                  found = True
+
+          if not found:
+              print("No incorrect Compose dependency found.")
+          PY
+
+      - name: Check Gradle files
+        working-directory: work/CaliTree
+        run: |
+          echo "Project files:"
+          find . -maxdepth 4 -type f | sort | head -300
+
+          echo ""
+          echo "Compose dependencies:"
+          grep -R "androidx.compose" . --include="*.gradle" --include="*.gradle.kts" || true
+
       - name: Build APK
         working-directory: work/CaliTree
         env:
