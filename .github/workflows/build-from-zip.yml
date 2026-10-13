@@ -1,11 +1,14 @@
-name: Build APK from CaliTree-3D ZIP
+name: Build APK from CaliTree-3D Updated ZIP
 
 on:
   workflow_dispatch:
   push:
     paths:
-      - "CaliTree-3D.zip"
+      - "CaliTree-3D-Updated.zip"
       - ".github/workflows/build-from-zip.yml"
+
+permissions:
+  contents: read
 
 jobs:
   build:
@@ -15,6 +18,16 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Check ZIP file
+        run: |
+          if [ ! -f "CaliTree-3D-Updated.zip" ]; then
+            echo "::error::CaliTree-3D-Updated.zip was not found in the repository root."
+            exit 1
+          fi
+
+          echo "ZIP file found."
+          ls -lh "CaliTree-3D-Updated.zip"
 
       - name: Setup Java
         uses: actions/setup-java@v4
@@ -35,59 +48,98 @@ jobs:
         run: |
           rm -rf work
           mkdir -p work
-          unzip -q "CaliTree-3D.zip" -d work
+          unzip -q "CaliTree-3D-Updated.zip" -d work
+
+          echo "Extracted project structure:"
+          find work -maxdepth 3 -type f | sort | head -300
+
+      - name: Locate Android project
+        id: project
+        run: |
+          PROJECT_DIR="$(find work -type f -name gradlew -print -quit | xargs -r dirname)"
+
+          if [ -z "$PROJECT_DIR" ]; then
+            PROJECT_DIR="$(find work -type f -name settings.gradle.kts -print -quit | xargs -r dirname)"
+          fi
+
+          if [ -z "$PROJECT_DIR" ]; then
+            PROJECT_DIR="$(find work -type f -name settings.gradle -print -quit | xargs -r dirname)"
+          fi
+
+          if [ -z "$PROJECT_DIR" ]; then
+            echo "::error::Could not locate the Android Gradle project in the ZIP."
+            echo "Check the extracted files and update the workflow if necessary."
+            exit 1
+          fi
+
+          echo "dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
+          echo "Android project directory: $PROJECT_DIR"
 
       - name: Fix Compose dependency
-        working-directory: work/CaliTree
+        working-directory: ${{ steps.project.outputs.dir }}
         run: |
           python3 - <<'PY'
           from pathlib import Path
 
-          files = list(Path(".").rglob("*.gradle")) + list(Path(".").rglob("*.gradle.kts"))
-
           old = "androidx.compose.ui.graphics:graphics"
           new = "androidx.compose.ui:ui-graphics"
 
-          found = False
+          files = (
+              list(Path(".").rglob("*.gradle"))
+              + list(Path(".").rglob("*.gradle.kts"))
+          )
 
           for file in files:
+              if "build" in file.parts or ".gradle" in file.parts:
+                  continue
+
               text = file.read_text(encoding="utf-8")
               if old in text:
-                  text = text.replace(old, new)
-                  file.write_text(text, encoding="utf-8")
-                  print(f"Fixed: {file}")
-                  found = True
-
-          if not found:
-              print("No incorrect Compose dependency found.")
+                  file.write_text(
+                      text.replace(old, new),
+                      encoding="utf-8"
+                  )
+                  print(f"Fixed dependency in: {file}")
           PY
 
       - name: Check Gradle files
-        working-directory: work/CaliTree
+        working-directory: ${{ steps.project.outputs.dir }}
         run: |
-          echo "Project files:"
-          find . -maxdepth 4 -type f | sort | head -300
+          echo "Gradle files:"
+          find . -maxdepth 4 \
+            \( -name "*.gradle" -o -name "*.gradle.kts" \) \
+            -type f -print
 
           echo ""
           echo "Compose dependencies:"
-          grep -R "androidx.compose" . --include="*.gradle" --include="*.gradle.kts" || true
+          grep -R "androidx.compose" . \
+            --include="*.gradle" \
+            --include="*.gradle.kts" \
+            --exclude-dir=build \
+            --exclude-dir=.gradle || true
 
       - name: Build APK
-        working-directory: work/CaliTree
+        working-directory: ${{ steps.project.outputs.dir }}
         env:
           GRADLE_OPTS: "-Dorg.gradle.daemon=false -Dorg.gradle.jvmargs=-Xmx3g"
         run: |
-          gradle assembleDebug --no-daemon
+          if [ -f "./gradlew" ]; then
+            chmod +x ./gradlew
+            ./gradlew assembleDebug --no-daemon
+          else
+            gradle assembleDebug --no-daemon
+          fi
 
       - name: Find APK
         run: |
           echo "APK files:"
-          find work/CaliTree -type f -name "*.apk"
+          find "${{ steps.project.outputs.dir }}" \
+            -type f -path "*/build/outputs/apk/*" -name "*.apk"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: CaliTree-3D-apk
           path: |
-            work/CaliTree/**/build/outputs/apk/**/*.apk
+            ${{ steps.project.outputs.dir }}/**/build/outputs/apk/**/*.apk
           if-no-files-found: error
