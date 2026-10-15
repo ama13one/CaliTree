@@ -14,158 +14,133 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Check ZIP file
-        run: |
-          if [ ! -f "CaliTree-3D-v1.3.zip" ]; then
-            echo "::error::CaliTree-3D-v1.3.zip not found."
-            exit 1
-          fi
-          ls -lh "CaliTree-3D-v1.3.zip"
-
-      - name: Setup Java
+      - name: Set up Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
-      - name: Setup Android SDK
+      - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
       - name: Accept Android SDK licenses
+        shell: bash
         run: |
-          yes | sdkmanager --licenses || true
+          set +o pipefail
+          yes | sdkmanager --licenses
+          echo "ANDROID SDK licenses step finished"
 
-      - name: Setup Gradle
+      - name: Install Android SDK packages
+        run: |
+          sdkmanager \
+            "platform-tools" \
+            "platforms;android-34" \
+            "build-tools;34.0.0"
+
+      - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.7"
 
       - name: Extract project ZIP
+        shell: bash
         run: |
-          rm -rf work
+          test -f "CaliTree-3D-v1.3.zip"
           mkdir -p work
           unzip -q "CaliTree-3D-v1.3.zip" -d work
 
-          echo "Project files:"
-          find work -maxdepth 3 -type f | sort | head -300
+          SETTINGS="$(find work -type f \
+            \( -name settings.gradle.kts -o -name settings.gradle \) \
+            -print -quit)"
 
-      - name: Locate Android project
-        id: project
-        run: |
-          PROJECT_DIR="$(find work -type f \
-            -name settings.gradle.kts -print -quit)"
-
-          if [ -z "$PROJECT_DIR" ]; then
-            PROJECT_DIR="$(find work -type f \
-              -name settings.gradle -print -quit)"
-          fi
-
-          if [ -z "$PROJECT_DIR" ]; then
-            echo "::error::Android Gradle project not found."
+          if [ -z "$SETTINGS" ]; then
+            echo "ERROR: Gradle settings file not found in ZIP."
             exit 1
           fi
 
-          PROJECT_DIR="$(dirname "$PROJECT_DIR")"
-          echo "dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
-          echo "Project: $PROJECT_DIR"
+          PROJECT_DIR="$(dirname "$SETTINGS")"
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+          echo "Project directory: $PROJECT_DIR"
 
-      - name: Rename app and fix Compose dependency
-        working-directory: ${{ steps.project.outputs.dir }}
+      - name: Fix app name and dependency
+        shell: bash
         run: |
           python3 - <<'PY'
+          import os
+          import re
           from pathlib import Path
 
-          # New display name shown on the Android launcher
-          strings = Path("app/src/main/res/values/strings.xml")
+          root = Path(os.environ["PROJECT_DIR"])
 
+          strings = root / "app/src/main/res/values/strings.xml"
           if not strings.exists():
-              raise SystemExit("strings.xml not found")
+              raise SystemExit(f"Missing file: {strings}")
 
-          text = strings.read_text(encoding="utf-8")
-          import re
+          content = strings.read_text(encoding="utf-8")
+          pattern = r'(<string\s+name="app_name"[^>]*>).*?(</string>)'
 
           updated, count = re.subn(
-              r'(<string\s+name="app_name"\s*>).*?(</string>)',
-              r'\1SkillMotion 3D\2',
-              text,
-              count=1
+              pattern,
+              lambda m: m.group(1) + "SkillMotion 3D" + m.group(2),
+              content,
+              count=1,
+              flags=re.DOTALL,
           )
 
           if count == 0:
-              raise SystemExit("app_name string not found")
+              raise SystemExit("Could not find app_name in strings.xml")
 
           strings.write_text(updated, encoding="utf-8")
-          print("App display name set to SkillMotion 3D")
+          print("App display name changed to SkillMotion 3D")
 
-          # Correct the Compose graphics dependency
-          old = "androidx.compose.ui.graphics:graphics"
-          new = "androidx.compose.ui:ui-graphics"
+          for gradle_file in root.rglob("*.gradle"):
+              text = gradle_file.read_text(encoding="utf-8")
+              text = text.replace(
+                  "androidx.compose.ui.graphics:graphics",
+                  "androidx.compose.ui:ui-graphics",
+              )
+              gradle_file.write_text(text, encoding="utf-8")
 
-          for pattern in ("*.gradle", "*.gradle.kts"):
-              for file in Path(".").rglob(pattern):
-                  if "build" in file.parts or ".gradle" in file.parts:
-                      continue
+          for gradle_file in root.rglob("*.gradle.kts"):
+              text = gradle_file.read_text(encoding="utf-8")
+              text = text.replace(
+                  "androidx.compose.ui.graphics:graphics",
+                  "androidx.compose.ui:ui-graphics",
+              )
+              gradle_file.write_text(text, encoding="utf-8")
 
-                  content = file.read_text(encoding="utf-8")
-                  if old in content:
-                      file.write_text(
-                          content.replace(old, new),
-                          encoding="utf-8"
-                      )
-                      print(f"Fixed dependency: {file}")
+          print("Dependency check completed")
           PY
 
-      - name: Verify project configuration
-        working-directory: ${{ steps.project.outputs.dir }}
-        run: |
-          echo "App name:"
-          grep 'name="app_name"' \
-            app/src/main/res/values/strings.xml
-
-          echo "Gradle configuration:"
-          find . -maxdepth 2 \
-            \( -name "*.gradle" -o -name "*.gradle.kts" \) \
-            -type f -print
-
-      - name: Build APK
-        working-directory: ${{ steps.project.outputs.dir }}
-        env:
-          GRADLE_OPTS: "-Dorg.gradle.daemon=false -Dorg.gradle.jvmargs=-Xmx3g"
-        run: |
-          if [ -f "./gradlew" ]; then
-            chmod +x ./gradlew
-            ./gradlew assembleDebug --no-daemon
-          else
-            gradle assembleDebug --no-daemon
-          fi
+      - name: Build debug APK
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: gradle --no-daemon assembleDebug
 
       - name: Find APK
         id: apk
-        working-directory: ${{ steps.project.outputs.dir }}
+        shell: bash
+        working-directory: ${{ env.PROJECT_DIR }}
         run: |
-          APK="$(find . -type f \
-            -path "*/build/outputs/apk/debug/*.apk" \
-            -print -quit)"
+          APK_PATH="$(find app/build/outputs/apk/debug \
+            -type f -name '*.apk' -print -quit)"
 
-          if [ -z "$APK" ]; then
-            echo "::error::APK was not generated."
+          if [ -z "$APK_PATH" ]; then
+            echo "ERROR: APK was not generated."
             exit 1
           fi
 
-          echo "path=$APK" >> "$GITHUB_OUTPUT"
-          ls -lh "$APK"
+          echo "path=$APK_PATH" >> "$GITHUB_OUTPUT"
+          echo "APK generated: $APK_PATH"
 
-      - name: Upload APK artifact
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: SkillMotion-3D-APK
-          path: ${{ steps.project.outputs.dir }}/${{ steps.apk.outputs.path }}
+          path: ${{ env.PROJECT_DIR }}/${{ steps.apk.outputs.path }}
           if-no-files-found: error
           retention-days: 14
-          
