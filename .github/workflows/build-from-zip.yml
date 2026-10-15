@@ -1,10 +1,11 @@
-name: Build APK from CaliTree-3D Updated ZIP
+
+name: Build APK from CaliTree 3D ZIP
 
 on:
   workflow_dispatch:
   push:
     paths:
-      - "CaliTree-3D-Updated.zip"
+      - "CaliTree-3D-v1.3.zip"
       - ".github/workflows/build-from-zip.yml"
 
 permissions:
@@ -21,13 +22,11 @@ jobs:
 
       - name: Check ZIP file
         run: |
-          if [ ! -f "CaliTree-3D-Updated.zip" ]; then
-            echo "::error::CaliTree-3D-Updated.zip was not found in the repository root."
+          if [ ! -f "CaliTree-3D-v1.3.zip" ]; then
+            echo "::error::CaliTree-3D-v1.3.zip not found."
             exit 1
           fi
-
-          echo "ZIP file found."
-          ls -lh "CaliTree-3D-Updated.zip"
+          ls -lh "CaliTree-3D-v1.3.zip"
 
       - name: Setup Java
         uses: actions/setup-java@v4
@@ -35,9 +34,12 @@ jobs:
           distribution: temurin
           java-version: "17"
 
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
       - name: Accept Android SDK licenses
         run: |
-          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses || true
+          yes | sdkmanager --licenses || true
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -48,75 +50,88 @@ jobs:
         run: |
           rm -rf work
           mkdir -p work
-          unzip -q "CaliTree-3D-Updated.zip" -d work
+          unzip -q "CaliTree-3D-v1.3.zip" -d work
 
-          echo "Extracted project structure:"
+          echo "Project files:"
           find work -maxdepth 3 -type f | sort | head -300
 
       - name: Locate Android project
         id: project
         run: |
-          PROJECT_DIR="$(find work -type f -name gradlew -print -quit | xargs -r dirname)"
+          PROJECT_DIR="$(find work -type f \
+            -name settings.gradle.kts -print -quit)"
 
           if [ -z "$PROJECT_DIR" ]; then
-            PROJECT_DIR="$(find work -type f -name settings.gradle.kts -print -quit | xargs -r dirname)"
+            PROJECT_DIR="$(find work -type f \
+              -name settings.gradle -print -quit)"
           fi
 
           if [ -z "$PROJECT_DIR" ]; then
-            PROJECT_DIR="$(find work -type f -name settings.gradle -print -quit | xargs -r dirname)"
-          fi
-
-          if [ -z "$PROJECT_DIR" ]; then
-            echo "::error::Could not locate the Android Gradle project in the ZIP."
-            echo "Check the extracted files and update the workflow if necessary."
+            echo "::error::Android Gradle project not found."
             exit 1
           fi
 
+          PROJECT_DIR="$(dirname "$PROJECT_DIR")"
           echo "dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
-          echo "Android project directory: $PROJECT_DIR"
+          echo "Project: $PROJECT_DIR"
 
-      - name: Fix Compose dependency
+      - name: Rename app and fix Compose dependency
         working-directory: ${{ steps.project.outputs.dir }}
         run: |
           python3 - <<'PY'
           from pathlib import Path
 
+          # New display name shown on the Android launcher
+          strings = Path("app/src/main/res/values/strings.xml")
+
+          if not strings.exists():
+              raise SystemExit("strings.xml not found")
+
+          text = strings.read_text(encoding="utf-8")
+          import re
+
+          updated, count = re.subn(
+              r'(<string\s+name="app_name"\s*>).*?(</string>)',
+              r'\1SkillMotion 3D\2',
+              text,
+              count=1
+          )
+
+          if count == 0:
+              raise SystemExit("app_name string not found")
+
+          strings.write_text(updated, encoding="utf-8")
+          print("App display name set to SkillMotion 3D")
+
+          # Correct the Compose graphics dependency
           old = "androidx.compose.ui.graphics:graphics"
           new = "androidx.compose.ui:ui-graphics"
 
-          files = (
-              list(Path(".").rglob("*.gradle"))
-              + list(Path(".").rglob("*.gradle.kts"))
-          )
+          for pattern in ("*.gradle", "*.gradle.kts"):
+              for file in Path(".").rglob(pattern):
+                  if "build" in file.parts or ".gradle" in file.parts:
+                      continue
 
-          for file in files:
-              if "build" in file.parts or ".gradle" in file.parts:
-                  continue
-
-              text = file.read_text(encoding="utf-8")
-              if old in text:
-                  file.write_text(
-                      text.replace(old, new),
-                      encoding="utf-8"
-                  )
-                  print(f"Fixed dependency in: {file}")
+                  content = file.read_text(encoding="utf-8")
+                  if old in content:
+                      file.write_text(
+                          content.replace(old, new),
+                          encoding="utf-8"
+                      )
+                      print(f"Fixed dependency: {file}")
           PY
 
-      - name: Check Gradle files
+      - name: Verify project configuration
         working-directory: ${{ steps.project.outputs.dir }}
         run: |
-          echo "Gradle files:"
-          find . -maxdepth 4 \
+          echo "App name:"
+          grep 'name="app_name"' \
+            app/src/main/res/values/strings.xml
+
+          echo "Gradle configuration:"
+          find . -maxdepth 2 \
             \( -name "*.gradle" -o -name "*.gradle.kts" \) \
             -type f -print
-
-          echo ""
-          echo "Compose dependencies:"
-          grep -R "androidx.compose" . \
-            --include="*.gradle" \
-            --include="*.gradle.kts" \
-            --exclude-dir=build \
-            --exclude-dir=.gradle || true
 
       - name: Build APK
         working-directory: ${{ steps.project.outputs.dir }}
@@ -131,15 +146,26 @@ jobs:
           fi
 
       - name: Find APK
+        id: apk
+        working-directory: ${{ steps.project.outputs.dir }}
         run: |
-          echo "APK files:"
-          find "${{ steps.project.outputs.dir }}" \
-            -type f -path "*/build/outputs/apk/*" -name "*.apk"
+          APK="$(find . -type f \
+            -path "*/build/outputs/apk/debug/*.apk" \
+            -print -quit)"
 
-      - name: Upload APK
+          if [ -z "$APK" ]; then
+            echo "::error::APK was not generated."
+            exit 1
+          fi
+
+          echo "path=$APK" >> "$GITHUB_OUTPUT"
+          ls -lh "$APK"
+
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: CaliTree-3D-apk
-          path: |
-            ${{ steps.project.outputs.dir }}/**/build/outputs/apk/**/*.apk
+          name: SkillMotion-3D-APK
+          path: ${{ steps.project.outputs.dir }}/${{ steps.apk.outputs.path }}
           if-no-files-found: error
+          retention-days: 14
+          
