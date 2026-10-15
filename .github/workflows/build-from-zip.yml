@@ -14,6 +14,7 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
 
     steps:
       - name: Checkout repository
@@ -31,35 +32,39 @@ jobs:
           cmdline-tools-version: "12266719"
           accept-android-sdk-licenses: true
           log-accepted-android-sdk-licenses: false
-          packages: |
-            platform-tools
-            platforms;android-34
-            build-tools;34.0.0
+
+      - name: Install Android SDK packages
+        shell: bash
+        run: |
+          set -e
+          sdkmanager "platform-tools"
+          sdkmanager "platforms;android-34"
+          sdkmanager "build-tools;34.0.0"
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.7"
 
-      - name: Extract ZIP
+      - name: Extract project ZIP
         shell: bash
         run: |
           set -euo pipefail
 
           if [ ! -f "CaliTree-3D-v1.3.zip" ]; then
-            echo "::error::CaliTree-3D-v1.3.zip was not found in the repository root."
+            echo "::error::CaliTree-3D-v1.3.zip was not found."
             exit 1
           fi
 
           mkdir -p work
-          unzip -q CaliTree-3D-v1.3.zip -d work
+          unzip -q "CaliTree-3D-v1.3.zip" -d work
 
           SETTINGS="$(find work -type f \
             \( -name settings.gradle.kts -o -name settings.gradle \) \
             -print -quit)"
 
           if [ -z "$SETTINGS" ]; then
-            echo "::error::No Gradle settings file was found inside the ZIP."
+            echo "::error::Gradle settings file not found in ZIP."
             exit 1
           fi
 
@@ -67,14 +72,14 @@ jobs:
 
           if [ ! -f "$PROJECT_DIR/app/build.gradle.kts" ] &&
              [ ! -f "$PROJECT_DIR/app/build.gradle" ]; then
-            echo "::error::The Android app Gradle file was not found."
+            echo "::error::Android app Gradle file not found."
             exit 1
           fi
 
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
-          echo "Found project at $PROJECT_DIR"
+          echo "Android project: $PROJECT_DIR"
 
-      - name: Update app name and dependency
+      - name: Update app name and Compose dependency
         shell: bash
         run: |
           set -euo pipefail
@@ -88,12 +93,13 @@ jobs:
           strings = root / "app/src/main/res/values/strings.xml"
 
           if not strings.exists():
-              raise SystemExit("strings.xml was not found")
+              raise SystemExit(f"strings.xml not found: {strings}")
 
           content = strings.read_text(encoding="utf-8")
+
           pattern = r'(<string\s+name="app_name"[^>]*>).*?(</string>)'
 
-          content, count = re.subn(
+          updated, count = re.subn(
               pattern,
               lambda m: m.group(1) + "SkillMotion 3D" + m.group(2),
               content,
@@ -102,27 +108,34 @@ jobs:
           )
 
           if count == 0:
-              raise SystemExit("app_name was not found in strings.xml")
+              raise SystemExit(
+                  "app_name was not found. App name was not changed."
+              )
 
-          strings.write_text(content, encoding="utf-8")
+          strings.write_text(updated, encoding="utf-8")
+          print("App display name: SkillMotion 3D")
 
-          for filename in ("build.gradle", "build.gradle.kts"):
-              for file in root.rglob(filename):
-                  content = file.read_text(encoding="utf-8")
-                  content = content.replace(
+          for pattern in ("*.gradle", "*.gradle.kts"):
+              for file in root.rglob(pattern):
+                  if "build" in file.parts or ".gradle" in file.parts:
+                      continue
+
+                  text = file.read_text(encoding="utf-8")
+                  fixed = text.replace(
                       "androidx.compose.ui.graphics:graphics",
                       "androidx.compose.ui:ui-graphics",
                   )
-                  file.write_text(content, encoding="utf-8")
 
-          print("App name set to SkillMotion 3D")
+                  if fixed != text:
+                      file.write_text(fixed, encoding="utf-8")
+                      print(f"Fixed Compose dependency: {file}")
           PY
 
       - name: Build debug APK
         shell: bash
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
-          set -o pipefail
+          set -euo pipefail
           gradle --no-daemon assembleDebug --stacktrace
 
       - name: Locate APK
@@ -130,18 +143,20 @@ jobs:
         shell: bash
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
-          APK_PATH="$(find app/build/outputs/apk/debug \
+          set -euo pipefail
+
+          APK_PATH="$(find app/build/outputs/apk \
             -type f -name '*.apk' -print -quit)"
 
           if [ -z "$APK_PATH" ]; then
-            echo "::error::Build finished without producing an APK."
+            echo "::error::Build completed but no APK was found."
             exit 1
           fi
 
           echo "path=$APK_PATH" >> "$GITHUB_OUTPUT"
-          echo "APK found: $APK_PATH"
+          ls -lh "$APK_PATH"
 
-      - name: Upload APK
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: SkillMotion-3D-APK
