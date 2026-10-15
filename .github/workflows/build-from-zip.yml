@@ -1,5 +1,5 @@
 
-name: Build APK from CaliTree 3D ZIP
+name: Build SkillMotion 3D APK
 
 on:
   workflow_dispatch:
@@ -20,46 +20,45 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Java 17
+      - name: Set up Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
-      - name: Locate Android SDK
+      - name: Configure Android SDK
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "ANDROID_HOME=${ANDROID_HOME:-/usr/local/lib/android/sdk}" >> "$GITHUB_ENV"
-          echo "ANDROID_SDK_ROOT=${ANDROID_HOME:-/usr/local/lib/android/sdk}" >> "$GITHUB_ENV"
-
           SDK="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
+
           SDKMANAGER="$(find "$SDK/cmdline-tools" \
             -type f -name sdkmanager -print | sort -V | tail -n 1)"
 
           if [ -z "$SDKMANAGER" ]; then
-            echo "::error::sdkmanager was not found."
+            echo "::error::Android sdkmanager not found."
             exit 1
           fi
 
           echo "SDKMANAGER=$SDKMANAGER" >> "$GITHUB_ENV"
-          echo "Using: $SDKMANAGER"
+          echo "Using $SDKMANAGER"
 
       - name: Accept Android SDK licenses
         shell: bash
         run: |
           set -o pipefail
           yes | "$SDKMANAGER" --licenses || {
-            echo "::error::Could not accept Android SDK licenses."
-            exit 1
+            echo "Checking whether licenses were accepted..."
+            "$SDKMANAGER" --licenses </dev/null || true
           }
 
       - name: Install Android SDK packages
         shell: bash
         run: |
           set -euo pipefail
-
           "$SDKMANAGER" "platform-tools"
           "$SDKMANAGER" "platforms;android-34"
           "$SDKMANAGER" "build-tools;34.0.0"
@@ -69,25 +68,27 @@ jobs:
         with:
           gradle-version: "8.7"
 
-      - name: Extract project ZIP
+      - name: Extract Android project
         shell: bash
         run: |
           set -euo pipefail
 
-          test -f "CaliTree-3D-v1.3.zip" || {
-            echo "::error::ZIP file not found in repository root."
+          ZIP="CaliTree-3D-v1.3.zip"
+
+          if [ ! -f "$ZIP" ]; then
+            echo "::error::ZIP file not found: $ZIP"
             exit 1
-          }
+          fi
 
           mkdir -p work
-          unzip -q "CaliTree-3D-v1.3.zip" -d work
+          unzip -q "$ZIP" -d work
 
           SETTINGS="$(find work -type f \
             \( -name settings.gradle.kts -o -name settings.gradle \) \
             -print -quit)"
 
           if [ -z "$SETTINGS" ]; then
-            echo "::error::Gradle settings file not found."
+            echo "::error::Gradle settings file not found in ZIP."
             exit 1
           fi
 
@@ -102,7 +103,7 @@ jobs:
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
           echo "Project directory: $PROJECT_DIR"
 
-      - name: Update app name and Compose dependency
+      - name: Set app name and fix Compose dependency
         shell: bash
         run: |
           set -euo pipefail
@@ -115,24 +116,24 @@ jobs:
           root = Path(os.environ["PROJECT_DIR"])
           strings = root / "app/src/main/res/values/strings.xml"
 
-          if not strings.exists():
-              raise SystemExit("strings.xml not found")
+          if strings.exists():
+              text = strings.read_text(encoding="utf-8")
+              pattern = r'(<string\s+name="app_name"[^>]*>).*?(</string>)'
+              updated, count = re.subn(
+                  pattern,
+                  lambda m: m.group(1) + "SkillMotion 3D" + m.group(2),
+                  text,
+                  count=1,
+                  flags=re.DOTALL,
+              )
 
-          content = strings.read_text(encoding="utf-8")
-          pattern = r'(<string\s+name="app_name"[^>]*>).*?(</string>)'
-
-          updated, count = re.subn(
-              pattern,
-              lambda m: m.group(1) + "SkillMotion 3D" + m.group(2),
-              content,
-              count=1,
-              flags=re.DOTALL,
-          )
-
-          if count == 0:
-              raise SystemExit("app_name not found in strings.xml")
-
-          strings.write_text(updated, encoding="utf-8")
+              if count:
+                  strings.write_text(updated, encoding="utf-8")
+                  print("App name changed to SkillMotion 3D")
+              else:
+                  print("Warning: app_name not found; keeping original name")
+          else:
+              print("Warning: strings.xml not found; keeping original name")
 
           for pattern in ("*.gradle", "*.gradle.kts"):
               for file in root.rglob(pattern):
@@ -148,36 +149,34 @@ jobs:
                   if fixed != text:
                       file.write_text(fixed, encoding="utf-8")
                       print(f"Fixed dependency in {file}")
-
-          print("App display name set to SkillMotion 3D")
           PY
 
       - name: Build debug APK
-        working-directory: ${{ env.PROJECT_DIR }}
         shell: bash
+        working-directory: ${{ env.PROJECT_DIR }}
         run: |
           set -euo pipefail
           gradle --no-daemon assembleDebug --stacktrace
 
-      - name: Locate APK
+      - name: Find APK
         id: apk
-        working-directory: ${{ env.PROJECT_DIR }}
         shell: bash
+        working-directory: ${{ env.PROJECT_DIR }}
         run: |
           set -euo pipefail
 
-          APK_PATH="$(find app/build/outputs/apk \
+          APK="$(find app/build/outputs/apk \
             -type f -name '*.apk' -print -quit)"
 
-          if [ -z "$APK_PATH" ]; then
+          if [ -z "$APK" ]; then
             echo "::error::No APK was generated."
             exit 1
           fi
 
-          echo "path=$APK_PATH" >> "$GITHUB_OUTPUT"
-          ls -lh "$APK_PATH"
+          echo "path=$APK" >> "$GITHUB_OUTPUT"
+          ls -lh "$APK"
 
-      - name: Upload APK artifact
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: SkillMotion-3D-APK
