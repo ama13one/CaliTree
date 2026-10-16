@@ -27,14 +27,15 @@ jobs:
         shell: bash
         run: |
           ZIP_FILE="$(find . -type f -name '*.zip' \
-            -not -path './.git/*' | sort | tail -n 1)"
+            -not -path './.git/*' \
+            | sort | tail -n 1)"
 
           if [ -z "$ZIP_FILE" ]; then
-            echo "ERROR: No project ZIP found in repository."
+            echo "::error::No project ZIP found."
             exit 1
           fi
 
-          echo "Found: $ZIP_FILE"
+          echo "Using ZIP: $ZIP_FILE"
           echo "zip_file=$ZIP_FILE" >> "$GITHUB_OUTPUT"
 
       - name: Extract project
@@ -44,27 +45,30 @@ jobs:
           unzip -q "${{ steps.findzip.outputs.zip_file }}" \
             -d extracted
 
-          echo "Extracted project files:"
-          find extracted -maxdepth 3 -type f | head -100
+          find extracted -type f \
+            \( -name gradlew \
+            -o -name settings.gradle \
+            -o -name settings.gradle.kts \)
 
-      - name: Locate Gradle project
+      - name: Locate Gradle wrapper
         id: project
         shell: bash
         run: |
-          GRADLE_FILE="$(find extracted -type f \
-            \( -name gradlew -o -name settings.gradle \
-            -o -name settings.gradle.kts \) \
-            | sort | head -n 1)"
+          WRAPPER="$(find extracted -type f \
+            -name gradlew | sort | head -n 1)"
 
-          if [ -z "$GRADLE_FILE" ]; then
-            echo "ERROR: Gradle project not found in ZIP."
+          if [ -z "$WRAPPER" ]; then
+            echo "::error::gradlew not found in ZIP."
+            echo "The ZIP must contain a complete Android project."
             exit 1
           fi
 
-          if [ "$(basename "$GRADLE_FILE")" = "gradlew" ]; then
-            PROJECT_DIR="$(dirname "$GRADLE_FILE")"
-          else
-            PROJECT_DIR="$(dirname "$GRADLE_FILE")"
+          PROJECT_DIR="$(dirname "$WRAPPER")"
+
+          if [ ! -f "$PROJECT_DIR/settings.gradle" ] && \
+             [ ! -f "$PROJECT_DIR/settings.gradle.kts" ]; then
+            echo "::error::Gradle settings file not found."
+            exit 1
           fi
 
           echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
@@ -76,35 +80,39 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
       - name: Install Android SDK packages
         shell: bash
         run: |
-          sdkmanager \
-            "platform-tools" \
-            "platforms;android-35" \
-            "build-tools;35.0.0"
+          SDKMANAGER="${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager"
+
+          if [ ! -x "$SDKMANAGER" ]; then
+            SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" \
+              -type f -name sdkmanager | head -n 1)"
+          fi
+
+          if [ -z "$SDKMANAGER" ] || [ ! -x "$SDKMANAGER" ]; then
+            echo "::error::Android SDK manager not found."
+            exit 1
+          fi
+
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+
+          "$SDKMANAGER" --install "platform-tools"
+          "$SDKMANAGER" --install "platforms;android-35"
+          "$SDKMANAGER" --install "build-tools;35.0.0"
 
       - name: Build debug APK
         working-directory: ${{ steps.project.outputs.project_dir }}
         shell: bash
         run: |
-          if [ ! -f gradlew ]; then
-            echo "ERROR: Gradle wrapper is missing."
-            exit 1
-          fi
-
           chmod +x gradlew
           ./gradlew --no-daemon assembleDebug
 
-      - name: Upload APK
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: SkillMotion-3D-APK
-          path: |
-            extracted/**/build/outputs/apk/debug/*.apk
+          path: extracted/**/build/outputs/apk/debug/*.apk
           if-no-files-found: error
           retention-days: 14
           
