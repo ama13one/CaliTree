@@ -4,183 +4,107 @@ name: Build SkillMotion 3D APK
 on:
   workflow_dispatch:
   push:
+    branches:
+      - main
     paths:
-      - "CaliTree-3D-v1.3.zip"
-      - ".github/workflows/build-from-zip.yml"
+      - '**.zip'
+      - '.github/workflows/build-from-zip.yml'
 
 permissions:
   contents: read
 
 jobs:
   build:
+    name: Build Android APK
     runs-on: ubuntu-latest
-    timeout-minutes: 60
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Find project ZIP
+        id: findzip
+        shell: bash
+        run: |
+          ZIP_FILE="$(find . -type f -name '*.zip' \
+            -not -path './.git/*' | sort | tail -n 1)"
+
+          if [ -z "$ZIP_FILE" ]; then
+            echo "ERROR: No project ZIP found in repository."
+            exit 1
+          fi
+
+          echo "Found: $ZIP_FILE"
+          echo "zip_file=$ZIP_FILE" >> "$GITHUB_OUTPUT"
+
+      - name: Extract project
+        shell: bash
+        run: |
+          mkdir -p extracted
+          unzip -q "${{ steps.findzip.outputs.zip_file }}" \
+            -d extracted
+
+          echo "Extracted project files:"
+          find extracted -maxdepth 3 -type f | head -100
+
+      - name: Locate Gradle project
+        id: project
+        shell: bash
+        run: |
+          GRADLE_FILE="$(find extracted -type f \
+            \( -name gradlew -o -name settings.gradle \
+            -o -name settings.gradle.kts \) \
+            | sort | head -n 1)"
+
+          if [ -z "$GRADLE_FILE" ]; then
+            echo "ERROR: Gradle project not found in ZIP."
+            exit 1
+          fi
+
+          if [ "$(basename "$GRADLE_FILE")" = "gradlew" ]; then
+            PROJECT_DIR="$(dirname "$GRADLE_FILE")"
+          else
+            PROJECT_DIR="$(dirname "$GRADLE_FILE")"
+          fi
+
+          echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
+          echo "Project directory: $PROJECT_DIR"
+
       - name: Set up Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: '17'
 
-      - name: Configure Android SDK
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          SDK="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
-          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
-          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
-
-          SDKMANAGER="$(find "$SDK/cmdline-tools" \
-            -type f -name sdkmanager -print | sort -V | tail -n 1)"
-
-          if [ -z "$SDKMANAGER" ]; then
-            echo "::error::Android sdkmanager not found."
-            exit 1
-          fi
-
-          echo "SDKMANAGER=$SDKMANAGER" >> "$GITHUB_ENV"
-          echo "Using $SDKMANAGER"
-
-      - name: Accept Android SDK licenses
-        shell: bash
-        run: |
-          set -o pipefail
-          yes | "$SDKMANAGER" --licenses || {
-            echo "Checking whether licenses were accepted..."
-            "$SDKMANAGER" --licenses </dev/null || true
-          }
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
 
       - name: Install Android SDK packages
         shell: bash
         run: |
-          set -euo pipefail
-          "$SDKMANAGER" "platform-tools"
-          "$SDKMANAGER" "platforms;android-34"
-          "$SDKMANAGER" "build-tools;34.0.0"
-
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: "8.7"
-
-      - name: Extract Android project
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          ZIP="CaliTree-3D-v1.3.zip"
-
-          if [ ! -f "$ZIP" ]; then
-            echo "::error::ZIP file not found: $ZIP"
-            exit 1
-          fi
-
-          mkdir -p work
-          unzip -q "$ZIP" -d work
-
-          SETTINGS="$(find work -type f \
-            \( -name settings.gradle.kts -o -name settings.gradle \) \
-            -print -quit)"
-
-          if [ -z "$SETTINGS" ]; then
-            echo "::error::Gradle settings file not found in ZIP."
-            exit 1
-          fi
-
-          PROJECT_DIR="$(dirname "$SETTINGS")"
-
-          if [ ! -f "$PROJECT_DIR/app/build.gradle.kts" ] &&
-             [ ! -f "$PROJECT_DIR/app/build.gradle" ]; then
-            echo "::error::Android app Gradle file not found."
-            exit 1
-          fi
-
-          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
-          echo "Project directory: $PROJECT_DIR"
-
-      - name: Set app name and fix Compose dependency
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          python3 - <<'PY'
-          import os
-          import re
-          from pathlib import Path
-
-          root = Path(os.environ["PROJECT_DIR"])
-          strings = root / "app/src/main/res/values/strings.xml"
-
-          if strings.exists():
-              text = strings.read_text(encoding="utf-8")
-              pattern = r'(<string\s+name="app_name"[^>]*>).*?(</string>)'
-              updated, count = re.subn(
-                  pattern,
-                  lambda m: m.group(1) + "SkillMotion 3D" + m.group(2),
-                  text,
-                  count=1,
-                  flags=re.DOTALL,
-              )
-
-              if count:
-                  strings.write_text(updated, encoding="utf-8")
-                  print("App name changed to SkillMotion 3D")
-              else:
-                  print("Warning: app_name not found; keeping original name")
-          else:
-              print("Warning: strings.xml not found; keeping original name")
-
-          for pattern in ("*.gradle", "*.gradle.kts"):
-              for file in root.rglob(pattern):
-                  if "build" in file.parts or ".gradle" in file.parts:
-                      continue
-
-                  text = file.read_text(encoding="utf-8")
-                  fixed = text.replace(
-                      "androidx.compose.ui.graphics:graphics",
-                      "androidx.compose.ui:ui-graphics",
-                  )
-
-                  if fixed != text:
-                      file.write_text(fixed, encoding="utf-8")
-                      print(f"Fixed dependency in {file}")
-          PY
+          sdkmanager \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;35.0.0"
 
       - name: Build debug APK
+        working-directory: ${{ steps.project.outputs.project_dir }}
         shell: bash
-        working-directory: ${{ env.PROJECT_DIR }}
         run: |
-          set -euo pipefail
-          gradle --no-daemon assembleDebug --stacktrace
-
-      - name: Find APK
-        id: apk
-        shell: bash
-        working-directory: ${{ env.PROJECT_DIR }}
-        run: |
-          set -euo pipefail
-
-          APK="$(find app/build/outputs/apk \
-            -type f -name '*.apk' -print -quit)"
-
-          if [ -z "$APK" ]; then
-            echo "::error::No APK was generated."
+          if [ ! -f gradlew ]; then
+            echo "ERROR: Gradle wrapper is missing."
             exit 1
           fi
 
-          echo "path=$APK" >> "$GITHUB_OUTPUT"
-          ls -lh "$APK"
+          chmod +x gradlew
+          ./gradlew --no-daemon assembleDebug
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: SkillMotion-3D-APK
-          path: ${{ env.PROJECT_DIR }}/${{ steps.apk.outputs.path }}
+          path: |
+            extracted/**/build/outputs/apk/debug/*.apk
           if-no-files-found: error
           retention-days: 14
           
