@@ -1,3 +1,4 @@
+
 name: Build SkillMotion 3D APK
 
 on:
@@ -21,18 +22,18 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Find and extract project ZIP
+      - name: Find and extract SkillMotion 1.7 ZIP
         id: extract
         shell: bash
         run: |
           set -euo pipefail
 
-          ZIP_FILE="CaliTree-1.6-Fixed.zip"
+          ZIP_FILE="SkillMotion-1.7.zip"
 
           if [ ! -f "$ZIP_FILE" ]; then
-            echo "::error::Expected ZIP not found: $ZIP_FILE"
-            echo "ZIP files in repository:"
-            find . -maxdepth 2 -type f -iname '*.zip'
+            echo "::error::Required file not found: $ZIP_FILE"
+            echo "ZIP files available in repository:"
+            find . -maxdepth 2 -type f -iname '*.zip' -print
             exit 1
           fi
 
@@ -50,10 +51,10 @@ jobs:
             SETTINGS="$(find extracted -type f \
               \( -name settings.gradle \
               -o -name settings.gradle.kts \) \
-              | head -n 1 || true)"
+              -not -path '*/.git/*' | head -n 1 || true)"
 
             if [ -z "$SETTINGS" ]; then
-              echo "::error::No Gradle Android project found in ZIP."
+              echo "::error::No Gradle project found in SkillMotion-1.7.zip"
               exit 1
             fi
 
@@ -74,7 +75,6 @@ jobs:
               sed -i \
                 's/androidx\.compose\.ui\.graphics:graphics/androidx.compose.ui:ui-graphics/g' \
                 "$FILE"
-
               echo "Fixed dependency in: $FILE"
             fi
           done < <(
@@ -133,15 +133,16 @@ jobs:
 
           if [ -f gradlew ]; then
             chmod +x gradlew
-            ./gradlew --no-daemon assembleDebug
+            ./gradlew --no-daemon clean assembleDebug
           else
-            gradle --no-daemon assembleDebug
+            gradle --no-daemon clean assembleDebug
           fi
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: SkillMotion-3D-APK
+          name: SkillMotion-1.7-APK
           path: extracted/**/build/outputs/apk/debug/*.apk
           if-no-files-found: error
           retention-days: 14
+          
