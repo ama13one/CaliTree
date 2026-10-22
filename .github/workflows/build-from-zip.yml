@@ -1,14 +1,21 @@
 
-name: Build SkillMotion 3D APK
+name: Build SkillMotion Android APK
 
 on:
   workflow_dispatch:
+    inputs:
+      zip_file:
+        description: "Exact ZIP filename in the repository root"
+        required: true
+        default: "SkillMotion-1.7.zip"
+        type: string
+
   push:
     branches:
       - main
     paths:
-      - '**.zip'
-      - '.github/workflows/build-from-zip.yml'
+      - "**.zip"
+      - ".github/workflows/build-from-zip.yml"
 
 permissions:
   contents: read
@@ -22,49 +29,98 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Find and extract SkillMotion 1.7 ZIP
+      - name: Select and extract project ZIP
         id: extract
         shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_ZIP: ${{ inputs.zip_file }}
         run: |
           set -euo pipefail
 
-          ZIP_FILE="SkillMotion-1.7.zip"
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            ZIP_FILE="$INPUT_ZIP"
+          else
+            mapfile -t CHANGED_ZIPS < <(
+              git diff-tree --no-commit-id --name-only -r \
+                "$GITHUB_SHA" -- '*.zip' |
+                grep -E '^[^/]+\.zip$' || true
+            )
+
+            if [ "${#CHANGED_ZIPS[@]}" -eq 1 ]; then
+              ZIP_FILE="${CHANGED_ZIPS[0]}"
+            elif [ "${#CHANGED_ZIPS[@]}" -gt 1 ]; then
+              echo "::error::Multiple ZIP files changed. Run this workflow manually and specify one ZIP."
+              printf '%s\n' "${CHANGED_ZIPS[@]}"
+              exit 1
+            else
+              ZIP_FILE="SkillMotion-1.7.zip"
+            fi
+          fi
+
+          if [[ "$ZIP_FILE" == */* || "$ZIP_FILE" != *.zip ]]; then
+            echo "::error::Enter a ZIP filename in the repository root, including .zip"
+            exit 1
+          fi
 
           if [ ! -f "$ZIP_FILE" ]; then
-            echo "::error::Required file not found: $ZIP_FILE"
-            echo "ZIP files available in repository:"
-            find . -maxdepth 2 -type f -iname '*.zip' -print
+            echo "::error::ZIP not found: $ZIP_FILE"
+            echo "ZIP files in repository root:"
+            find . -maxdepth 1 -type f -name '*.zip' -printf '%f\n'
             exit 1
           fi
 
           echo "Selected ZIP: $ZIP_FILE"
 
+          rm -rf extracted
           mkdir -p extracted
           unzip -oq "$ZIP_FILE" -d extracted
 
-          WRAPPER="$(find extracted -type f -name gradlew \
-            -not -path '*/.git/*' | head -n 1 || true)"
+          mapfile -t WRAPPERS < <(
+            find extracted -type f -name gradlew \
+              -not -path '*/.git/*' -print
+          )
 
-          if [ -n "$WRAPPER" ]; then
-            PROJECT_DIR="$(dirname "$WRAPPER")"
+          if [ "${#WRAPPERS[@]}" -gt 1 ]; then
+            echo "::error::Multiple Gradle wrappers found. ZIP must contain one Android project."
+            printf '%s\n' "${WRAPPERS[@]}"
+            exit 1
+          fi
+
+          if [ "${#WRAPPERS[@]}" -eq 1 ]; then
+            PROJECT_DIR="$(dirname "${WRAPPERS[0]}")"
           else
-            SETTINGS="$(find extracted -type f \
-              \( -name settings.gradle \
-              -o -name settings.gradle.kts \) \
-              -not -path '*/.git/*' | head -n 1 || true)"
+            mapfile -t SETTINGS_FILES < <(
+              find extracted -type f \
+                \( -name settings.gradle -o -name settings.gradle.kts \) \
+                -not -path '*/.git/*' -print
+            )
 
-            if [ -z "$SETTINGS" ]; then
-              echo "::error::No Gradle project found in SkillMotion-1.7.zip"
+            if [ "${#SETTINGS_FILES[@]}" -ne 1 ]; then
+              echo "::error::Could not identify exactly one Gradle project."
+              printf '%s\n' "${SETTINGS_FILES[@]:-No settings files found}"
               exit 1
             fi
 
-            PROJECT_DIR="$(dirname "$SETTINGS")"
+            PROJECT_DIR="$(dirname "${SETTINGS_FILES[0]}")"
+          fi
+
+          if [ ! -f "$PROJECT_DIR/settings.gradle" ] &&
+             [ ! -f "$PROJECT_DIR/settings.gradle.kts" ]; then
+            echo "::error::Gradle settings file is missing."
+            exit 1
+          fi
+
+          if [ ! -d "$PROJECT_DIR/app" ]; then
+            echo "::error::No app directory found in the selected project."
+            exit 1
           fi
 
           echo "Project directory: $PROJECT_DIR"
           echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
+          echo "zip_file=$ZIP_FILE" >> "$GITHUB_OUTPUT"
 
-      - name: Fix Compose graphics dependency
+      - name: Check and fix known Compose dependency typo
         working-directory: ${{ steps.extract.outputs.project_dir }}
         shell: bash
         run: |
@@ -75,7 +131,7 @@ jobs:
               sed -i \
                 's/androidx\.compose\.ui\.graphics:graphics/androidx.compose.ui:ui-graphics/g' \
                 "$FILE"
-              echo "Fixed dependency in: $FILE"
+              echo "Fixed known dependency typo in $FILE"
             fi
           done < <(
             find . -type f \
@@ -98,21 +154,21 @@ jobs:
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: "17"
 
       - name: Set up Gradle
-        if: ${{ hashFiles('extracted/**/gradlew') == '' }}
+        if: ${{ !hashFiles('extracted/**/gradlew') }}
         uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: '8.7'
+          gradle-version: "8.7"
 
-      - name: Install Android SDK
+      - name: Install Android SDK packages
         shell: bash
         run: |
           set -euo pipefail
 
           SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" \
-            -type f -name sdkmanager | head -n 1 || true)"
+            -type f -name sdkmanager -print -quit)"
 
           if [ -z "$SDKMANAGER" ]; then
             echo "::error::Android SDK manager not found."
@@ -121,11 +177,13 @@ jobs:
 
           yes | "$SDKMANAGER" --licenses >/dev/null || true
 
-          "$SDKMANAGER" --install "platform-tools"
-          "$SDKMANAGER" --install "platforms;android-35"
-          "$SDKMANAGER" --install "build-tools;35.0.0"
+          "$SDKMANAGER" --install \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;35.0.0"
 
-      - name: Build APK
+      - name: Build debug APK
+        id: build
         working-directory: ${{ steps.extract.outputs.project_dir }}
         shell: bash
         run: |
@@ -138,11 +196,24 @@ jobs:
             gradle --no-daemon clean assembleDebug
           fi
 
-      - name: Upload APK
+          mapfile -t APKS < <(
+            find . -type f -path '*/build/outputs/apk/debug/*.apk' \
+              -not -path '*/.gradle/*' -print
+          )
+
+          if [ "${#APKS[@]}" -eq 0 ]; then
+            echo "::error::Build completed but no debug APK was found."
+            exit 1
+          fi
+
+          echo "APK files produced:"
+          printf '%s\n' "${APKS[@]}"
+
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: SkillMotion-1.7-APK
-          path: extracted/**/build/outputs/apk/debug/*.apk
+          name: SkillMotion-debug-APK
+          path: ${{ steps.extract.outputs.project_dir }}/**/build/outputs/apk/debug/*.apk
           if-no-files-found: error
           retention-days: 14
           
